@@ -31,21 +31,28 @@ def _log(msg):
     INIT_LOG.append(msg)
 
 
-def _snapshot_dir(repo_id):
-    base = os.path.join(CACHE, "models--" + repo_id.replace("/", "--"), "snapshots")
-    snaps = sorted(glob.glob(os.path.join(base, "*")))
-    if not snaps:
-        # help debugging: show what IS in the cache root
-        listing = glob.glob(os.path.join(CACHE, "*")) if os.path.isdir(CACHE) else "CACHE dir missing"
-        raise FileNotFoundError(f"model cache missing for '{repo_id}' under {base}. cache root has: {listing}")
-    return snaps[-1]
-
-
-def _find_file(root, name):
-    hits = glob.glob(os.path.join(root, "**", name), recursive=True)
-    if not hits:
-        raise FileNotFoundError(f"'{name}' not found under {root}; files: {os.listdir(root)[:20]}")
-    return hits[0]
+def _find_checkpoint(fname):
+    """Find the checkpoint file ANYWHERE under the model cache, regardless of how
+    RunPod named the repo dir (case / commit-hash variations). Falls back to any
+    distilled-fp8 .safetensors. Raises with a full cache listing on failure."""
+    roots = [CACHE, "/runpod-volume/huggingface-cache", "/runpod-volume"]
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        hits = glob.glob(os.path.join(root, "**", fname), recursive=True)
+        if hits:
+            return hits[0]
+        alt = [p for p in glob.glob(os.path.join(root, "**", "*.safetensors"), recursive=True)
+               if "distilled" in os.path.basename(p).lower() and "fp8" in os.path.basename(p).lower()]
+        if alt:
+            return alt[0]
+    listing = {}
+    for root in roots:
+        if os.path.isdir(root):
+            listing[root] = os.listdir(root)[:30]
+    raise FileNotFoundError(
+        f"checkpoint '{fname}' not found in model cache. "
+        f"Make sure the endpoint Model field = Lightricks/LTX-2.3-fp8. Cache contents: {listing}")
 
 
 # ---- one-time load at import, errors captured (no crash loop) -------------
@@ -66,7 +73,7 @@ try:
 
     _log(f"[init] cuda available={torch.cuda.is_available()} "
          f"gpu={torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'}")
-    CKPT = _find_file(_snapshot_dir(CKPT_REPO), CKPT_FILE)
+    CKPT = _find_checkpoint(CKPT_FILE)
     if not os.path.isdir(GEMMA_DIR):
         raise FileNotFoundError(f"gemma dir not found: {GEMMA_DIR}")
     if not os.path.isfile(UPSAMPLER_PATH):
