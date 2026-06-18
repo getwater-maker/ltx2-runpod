@@ -40,7 +40,7 @@ def _find_file(root: str, name: str) -> str:
 # ---- one-time model load at worker startup -------------------------------
 CKPT_REPO = os.environ.get("CKPT_REPO", "Lightricks/LTX-2.3-fp8")
 CKPT_FILE = os.environ.get("CKPT_FILE", "ltx-2.3-22b-distilled-fp8.safetensors")
-GEMMA_REPO = os.environ.get("GEMMA_REPO", "google/gemma-3-12b-it-qat-q4_0-unquantized")
+GEMMA_REPO = os.environ.get("GEMMA_REPO", "unsloth/gemma-3-12b-it")
 UPSAMPLER_PATH = os.environ.get("UPSAMPLER_PATH", "/models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors")
 QUANT = os.environ.get("QUANT", "fp8-scaled-mm").strip()
 

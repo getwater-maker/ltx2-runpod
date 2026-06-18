@@ -32,7 +32,7 @@ COPY handler.py /app/handler.py
 # Model selection (overridable as endpoint env vars without rebuilding)
 ENV CKPT_REPO=Lightricks/LTX-2.3-fp8 \
     CKPT_FILE=ltx-2.3-22b-distilled-fp8.safetensors \
-    GEMMA_REPO=google/gemma-3-12b-it-qat-q4_0-unquantized \
+    GEMMA_REPO=unsloth/gemma-3-12b-it \
     UPSAMPLER_PATH=/models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors \
     QUANT=fp8-scaled-mm
 

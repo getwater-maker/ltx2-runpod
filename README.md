@@ -7,8 +7,8 @@ The distilled two-stage pipeline is loaded once per worker and reused.
 ## Models (via RunPod model caching / HF cache)
 Add these in the endpoint's **Model** section:
 - `Lightricks/LTX-2.3-fp8` — checkpoint (public)
-- `google/gemma-3-12b-it-qat-q4_0-unquantized` — text encoder (**gated**: accept the
-  license on its HF page + set an HF token on the endpoint)
+- `unsloth/gemma-3-12b-it` — text encoder (public, no token). The official variant is
+  `google/gemma-3-12b-it-qat-q4_0-unquantized` (gated) — switch via `GEMMA_REPO` if needed.
 
 The spatial upsampler (~1 GB) is baked into the image.
 
