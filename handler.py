@@ -1,9 +1,11 @@
 """RunPod Serverless handler for LTX-2.3 image-to-video (official ltx-pipelines).
 
-Robust startup: the heavy pipeline is loaded once at import, but inside a
-try/except. If loading fails, the worker does NOT crash-loop — it still starts
-the serverless loop and returns the captured error/traceback as the job result,
-so the failure is visible via the /status API instead of an invisible restart.
+LAZY loading: only `import runpod` happens at module import, so the worker
+reaches serverless.start() in seconds and becomes ready immediately (no risk of
+being killed during a long import-time load). The heavy 53GB pipeline is loaded
+on the FIRST job, inside try/except, and cached in a global. Any load/runtime
+error is returned as the job result (visible via the /status API) instead of
+crash-looping invisibly.
 
 Models:
   - checkpoint: RunPod model cache (Model field = Lightricks/LTX-2.3-fp8)
@@ -22,19 +24,11 @@ CACHE = "/runpod-volume/huggingface-cache/hub"
 
 PIPE = None
 TILING = None
-INIT_ERROR = None
-INIT_LOG = []
-
-
-def _log(msg):
-    print(msg, flush=True)
-    INIT_LOG.append(msg)
 
 
 def _find_checkpoint(fname):
     """Find the checkpoint file ANYWHERE under the model cache, regardless of how
-    RunPod named the repo dir (case / commit-hash variations). Falls back to any
-    distilled-fp8 .safetensors. Raises with a full cache listing on failure."""
+    RunPod named the repo dir (case / commit-hash variations)."""
     roots = [CACHE, "/runpod-volume/huggingface-cache", "/runpod-volume"]
     for root in roots:
         if not os.path.isdir(root):
@@ -46,65 +40,58 @@ def _find_checkpoint(fname):
                if "distilled" in os.path.basename(p).lower() and "fp8" in os.path.basename(p).lower()]
         if alt:
             return alt[0]
-    listing = {}
-    for root in roots:
-        if os.path.isdir(root):
-            listing[root] = os.listdir(root)[:30]
+    listing = {r: os.listdir(r)[:30] for r in roots if os.path.isdir(r)}
     raise FileNotFoundError(
-        f"checkpoint '{fname}' not found in model cache. "
-        f"Make sure the endpoint Model field = Lightricks/LTX-2.3-fp8. Cache contents: {listing}")
+        f"checkpoint '{fname}' not in model cache. "
+        f"Set endpoint Model field = Lightricks/LTX-2.3-fp8. Cache contents: {listing}")
 
 
-# ---- one-time load at import, errors captured (no crash loop) -------------
-try:
-    _log("[init] importing torch / ltx-pipelines ...")
+def _ensure_loaded():
+    """Load the pipeline once (on first job)."""
+    global PIPE, TILING
+    if PIPE is not None:
+        return
     import torch
     from ltx_pipelines.distilled import DistilledPipeline
     from ltx_pipelines.utils.quantization_factory import QuantizationKind
     from ltx_pipelines.utils.types import OffloadMode
     from ltx_core.model.video_vae import TilingConfig
 
-    CKPT_REPO = os.environ.get("CKPT_REPO", "Lightricks/LTX-2.3-fp8")
     CKPT_FILE = os.environ.get("CKPT_FILE", "ltx-2.3-22b-distilled-fp8.safetensors")
     GEMMA_DIR = os.environ.get("GEMMA_DIR", "/models/gemma")
     UPSAMPLER_PATH = os.environ.get("UPSAMPLER_PATH", "/models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors")
     QUANT = os.environ.get("QUANT", "fp8-scaled-mm").strip()
     OFFLOAD = os.environ.get("OFFLOAD", "cpu").strip().lower()
 
-    _log(f"[init] cuda available={torch.cuda.is_available()} "
-         f"gpu={torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'}")
-    CKPT = _find_checkpoint(CKPT_FILE)
+    print(f"[init] cuda={torch.cuda.is_available()} "
+          f"gpu={torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'}", flush=True)
+    ckpt = _find_checkpoint(CKPT_FILE)
     if not os.path.isdir(GEMMA_DIR):
         raise FileNotFoundError(f"gemma dir not found: {GEMMA_DIR}")
     if not os.path.isfile(UPSAMPLER_PATH):
         raise FileNotFoundError(f"upsampler not found: {UPSAMPLER_PATH}")
-    quant_policy = QuantizationKind(QUANT).to_policy(CKPT) if QUANT else None
+    quant_policy = QuantizationKind(QUANT).to_policy(ckpt) if QUANT else None
     try:
         offload_mode = OffloadMode(OFFLOAD)
     except ValueError:
         offload_mode = OffloadMode.NONE
-    _log(f"[init] ckpt={CKPT}")
-    _log(f"[init] gemma={GEMMA_DIR} upsampler={UPSAMPLER_PATH} quant={QUANT} offload={offload_mode}")
-    _log("[init] loading DistilledPipeline (may take minutes)...")
-    PIPE = DistilledPipeline(
-        distilled_checkpoint_path=CKPT,
+    print(f"[init] ckpt={ckpt} quant={QUANT} offload={offload_mode} loading...", flush=True)
+    pipe = DistilledPipeline(
+        distilled_checkpoint_path=ckpt,
         gemma_root=GEMMA_DIR,
         spatial_upsampler_path=UPSAMPLER_PATH,
         loras=[],
         quantization=quant_policy,
         offload_mode=offload_mode,
     )
+    PIPE = pipe
     TILING = TilingConfig.default()
-    _log("[init] pipeline ready")
-except Exception:
-    INIT_ERROR = traceback.format_exc()
-    print("[init] FAILED:\n" + INIT_ERROR, flush=True)
+    print("[init] pipeline ready", flush=True)
 
 
 def handler(job):
-    if PIPE is None:
-        return {"error": "pipeline failed to load at startup", "trace": INIT_ERROR, "init_log": INIT_LOG}
     try:
+        _ensure_loaded()
         from ltx_pipelines.utils.args import ImageConditioningInput
         from ltx_pipelines.utils.media_io import encode_video
         from ltx_core.model.video_vae import get_video_chunks_number
