@@ -43,12 +43,14 @@ CKPT_FILE = os.environ.get("CKPT_FILE", "ltx-2.3-22b-distilled-fp8.safetensors")
 GEMMA_REPO = os.environ.get("GEMMA_REPO", "unsloth/gemma-3-12b-it")
 UPSAMPLER_PATH = os.environ.get("UPSAMPLER_PATH", "/models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors")
 QUANT = os.environ.get("QUANT", "fp8-scaled-mm").strip()
+OFFLOAD = os.environ.get("OFFLOAD", "none").strip().lower()  # none | cpu | disk
 
 print("[init] importing ltx-pipelines...", flush=True)
 from ltx_pipelines.distilled import DistilledPipeline
 from ltx_pipelines.utils.args import ImageConditioningInput
 from ltx_pipelines.utils.quantization_factory import QuantizationKind
 from ltx_pipelines.utils.media_io import encode_video
+from ltx_pipelines.utils.types import OffloadMode
 from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
 
 print("[init] resolving model paths from cache...", flush=True)
@@ -60,6 +62,12 @@ print(f"[init] gemma     = {GEMMA_DIR}", flush=True)
 print(f"[init] upsampler = {UPSAMPLER_PATH}", flush=True)
 print(f"[init] quant     = {QUANT or 'none'}", flush=True)
 
+try:
+    offload_mode = OffloadMode(OFFLOAD)
+except ValueError:
+    offload_mode = OffloadMode.NONE
+print(f"[init] offload   = {offload_mode}", flush=True)
+
 print("[init] loading DistilledPipeline (one-time, may take a minute)...", flush=True)
 PIPE = DistilledPipeline(
     distilled_checkpoint_path=CKPT,
@@ -67,6 +75,7 @@ PIPE = DistilledPipeline(
     spatial_upsampler_path=UPSAMPLER_PATH,
     loras=[],
     quantization=QUANT_POLICY,
+    offload_mode=offload_mode,
 )
 TILING = TilingConfig.default()
 print("[init] pipeline ready.", flush=True)
