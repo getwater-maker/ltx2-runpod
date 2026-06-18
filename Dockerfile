@@ -29,11 +29,17 @@ RUN mkdir -p /models \
 
 # Bake the Gemma text encoder directory (~24 GB, public, no token). RunPod's Model
 # caching field only takes ONE model (the checkpoint), so we bake Gemma here.
+# IMPORTANT: download each ~5GB shard in its OWN layer so they pull in parallel and
+# a failed shard retries alone (a single 24GB layer kept failing/restarting forever).
 RUN uv pip install "huggingface_hub[hf_transfer]"
 ENV HF_HUB_ENABLE_HF_TRANSFER=1
-RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it \
-      --local-dir /models/gemma --exclude "*.gguf" "original/*" \
- && ls -lh /models/gemma
+RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it --include "*.json" "*.model" "*.jinja" --local-dir /models/gemma
+RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it --include "model-00001-of-00005.safetensors" --local-dir /models/gemma
+RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it --include "model-00002-of-00005.safetensors" --local-dir /models/gemma
+RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it --include "model-00003-of-00005.safetensors" --local-dir /models/gemma
+RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it --include "model-00004-of-00005.safetensors" --local-dir /models/gemma
+RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it --include "model-00005-of-00005.safetensors" --local-dir /models/gemma
+RUN ls -lh /models/gemma
 
 COPY handler.py /app/handler.py
 
