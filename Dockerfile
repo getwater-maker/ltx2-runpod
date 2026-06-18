@@ -27,13 +27,22 @@ RUN mkdir -p /models \
  && wget -q -O /models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors \
       "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
 
+# Bake the Gemma text encoder directory (~24 GB, public, no token). RunPod's Model
+# caching field only takes ONE model (the checkpoint), so we bake Gemma here.
+RUN uv pip install "huggingface_hub[hf_transfer]"
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
+RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it \
+      --local-dir /models/gemma --exclude "*.gguf" "original/*" \
+ && ls -lh /models/gemma
+
 COPY handler.py /app/handler.py
 
 # Model selection (overridable as endpoint env vars without rebuilding)
 ENV CKPT_REPO=Lightricks/LTX-2.3-fp8 \
     CKPT_FILE=ltx-2.3-22b-distilled-fp8.safetensors \
-    GEMMA_REPO=unsloth/gemma-3-12b-it \
+    GEMMA_DIR=/models/gemma \
     UPSAMPLER_PATH=/models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors \
-    QUANT=fp8-scaled-mm
+    QUANT=fp8-scaled-mm \
+    OFFLOAD=cpu
 
 CMD ["/app/LTX-2/.venv/bin/python", "/app/handler.py"]
