@@ -1,4 +1,0 @@
-# Shell scripts and Dockerfile must use LF so the Linux build doesn't choke on CRLF
-*.sh text eol=lf
-Dockerfile text eol=lf
-prestart.sh text eol=lf

@@ -1,37 +1,39 @@
-# LTX-2.3 image-to-video worker for RunPod Serverless
-# Method #4 (Hugging Face model caching): the heavy checkpoint is NOT baked in.
-# It is pulled by RunPod's model cache at boot (set Model = Lightricks/LTX-2.3-fp8
-# on the endpoint). Only the small text encoder is baked in for reliability.
-FROM runpod/worker-comfyui:5.8.6-base
+# LTX-2.3 image-to-video worker for RunPod Serverless (길 B: official ltx-pipelines, no ComfyUI)
+# Heavy models come from RunPod model caching (HF cache). Only the small spatial
+# upsampler is baked in. The distilled pipeline is self-contained (no separate LoRA).
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
-# Tools we rely on at build time
-RUN apt-get update && apt-get install -y --no-install-recommends git wget ca-certificates \
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git wget curl ca-certificates ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 
-# LTX-2.3 nodes + example workflows (LTX-2.3 is also in ComfyUI core; this adds the
-# official node pack so the workflow loads identically to the docs).
-RUN git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo \
-        /comfyui/custom_nodes/ComfyUI-LTXVideo \
- && if [ -f /comfyui/custom_nodes/ComfyUI-LTXVideo/requirements.txt ]; then \
-        (uv pip install -r /comfyui/custom_nodes/ComfyUI-LTXVideo/requirements.txt \
-         || pip install -r /comfyui/custom_nodes/ComfyUI-LTXVideo/requirements.txt); \
-    fi
+# uv (manages its own Python 3.12 per the repo's requires-python + uv.lock)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
 
-# Bake the Gemma text encoder (~9.5 GB) under the exact filename the workflow
-# expects. Public repo -> no Hugging Face token needed.
-RUN mkdir -p /comfyui/models/text_encoders \
- && wget -q -O /comfyui/models/text_encoders/comfy_gemma_3_12B_it.safetensors \
-      "https://huggingface.co/Comfy-Org/ltx-2/resolve/main/split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" \
- && ls -lh /comfyui/models/text_encoders/
+# Official LTX-2 inference package (ltx-core + ltx-pipelines)
+RUN git clone --depth 1 https://github.com/Lightricks/LTX-2.git /app/LTX-2
+WORKDIR /app/LTX-2
+RUN uv sync --frozen
+# RunPod serverless SDK into the same venv
+RUN uv pip install runpod
 
-# Bake the distilled LoRA (~7.6 GB) at the path the workflow references
-# (loras/ltxv/ltx2/...). Public repo -> no token needed.
-RUN mkdir -p /comfyui/models/loras/ltxv/ltx2 \
- && wget -q -O "/comfyui/models/loras/ltxv/ltx2/ltx-2.3-22b-distilled-lora-384-1.1.safetensors" \
-      "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-lora-384-1.1.safetensors" \
- && ls -lh /comfyui/models/loras/ltxv/ltx2/
+# Bake the small spatial upsampler (~1 GB, public, no token)
+RUN mkdir -p /models \
+ && wget -q -O /models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors \
+      "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
 
-# Runtime: symlink the model-cached checkpoint into ComfyUI, then start the worker.
-COPY prestart.sh /prestart.sh
-RUN chmod +x /prestart.sh
-CMD ["/prestart.sh"]
+COPY handler.py /app/handler.py
+
+# Model selection (overridable as endpoint env vars without rebuilding)
+ENV CKPT_REPO=Lightricks/LTX-2.3-fp8 \
+    CKPT_FILE=ltx-2.3-22b-distilled-fp8.safetensors \
+    GEMMA_REPO=google/gemma-3-12b-it-qat-q4_0-unquantized \
+    UPSAMPLER_PATH=/models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors \
+    QUANT=fp8-scaled-mm
+
+CMD ["/app/LTX-2/.venv/bin/python", "/app/handler.py"]

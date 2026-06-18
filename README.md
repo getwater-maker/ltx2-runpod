@@ -1,23 +1,31 @@
-# LTX-2.3 I2V worker for RunPod Serverless (Hugging Face model caching)
+# LTX-2.3 image-to-video worker for RunPod Serverless (official ltx-pipelines)
 
-Custom [worker-comfyui](https://github.com/runpod-workers/worker-comfyui) image that runs
-**LTX-2.3** image-to-video on RunPod Serverless using the **model caching** ("Hugging
-Face cache") deployment method.
+Runs **LTX-2.3** image-to-video on RunPod Serverless using Lightricks' official
+[LTX-2 inference package](https://github.com/Lightricks/LTX-2) — **no ComfyUI**.
+The distilled two-stage pipeline is loaded once per worker and reused.
 
-## How models are provided
-- **Checkpoint** (`Lightricks/LTX-2.3-fp8`, ~27 GB) → **NOT** baked in. RunPod's model
-  cache downloads it at boot. Add `Lightricks/LTX-2.3-fp8` in the endpoint's **Model**
-  section. `prestart.sh` symlinks it into ComfyUI at runtime.
-- **Text encoder** (`gemma_3_12B_it_fp4_mixed.safetensors`) → baked into the image as
-  `comfy_gemma_3_12B_it.safetensors` (small, public, deterministic).
-- No Hugging Face token required — all repos are public.
+## Models (via RunPod model caching / HF cache)
+Add these in the endpoint's **Model** section:
+- `Lightricks/LTX-2.3-fp8` — checkpoint (public)
+- `google/gemma-3-12b-it-qat-q4_0-unquantized` — text encoder (**gated**: accept the
+  license on its HF page + set an HF token on the endpoint)
 
-## Deploy
-1. Push this folder to a GitHub repo.
-2. RunPod → Serverless → New Endpoint → **Import Git Repository** → select this repo.
-3. **Model** section: add `Lightricks/LTX-2.3-fp8`.
-4. GPU: 48 GB (e.g. L40S / A6000 / A40).
-5. Build & deploy.
+The spatial upsampler (~1 GB) is baked into the image.
 
-The companion client tools (`send_to_runpod.py`, `영상만들기.bat`) live in the parent
-project folder and call this endpoint.
+## Request format
+```json
+{ "input": {
+    "image": "<base64 image>",
+    "prompt": "a gentle camera push-in, natural motion",
+    "height": 768, "width": 1280,
+    "num_frames": 121, "frame_rate": 25, "seed": 42
+} }
+```
+Returns `{ "video_base64": "...", "filename": "output.mp4" }`.
+
+## GPU
+Use an **fp8-capable 48 GB GPU (Ada/Hopper, e.g. L40S)**. On Ampere (A40/A6000) fp8
+matmul is unsupported — set `QUANT=fp8-cast` or use a larger GPU instead.
+
+Env vars `CKPT_REPO`, `CKPT_FILE`, `GEMMA_REPO`, `QUANT`, `UPSAMPLER_PATH` override
+defaults without rebuilding.
