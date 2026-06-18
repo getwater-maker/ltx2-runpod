@@ -1,51 +1,48 @@
-# LTX-2.3 image-to-video worker for RunPod Serverless (길 B: official ltx-pipelines, no ComfyUI)
-# Heavy models come from RunPod model caching (HF cache). Only the small spatial
-# upsampler is baked in. The distilled pipeline is self-contained (no separate LoRA).
+# LTX-2.3 image-to-video worker for RunPod Serverless (official ltx-pipelines, no ComfyUI)
+# Checkpoint comes from RunPod model caching (Model field = Lightricks/LTX-2.3-fp8).
+# Gemma + upsampler are baked in. Python pinned to 3.12 (3.14 breaks multiprocessing).
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    PYTORCH_ALLOC_CONF=expandable_segments:True \
+    HF_HUB_ENABLE_HF_TRANSFER=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git wget curl ca-certificates ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 
-# uv (manages its own Python 3.12 per the repo's requires-python + uv.lock)
+# uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
-# Official LTX-2 inference package (ltx-core + ltx-pipelines)
-RUN git clone --depth 1 https://github.com/Lightricks/LTX-2.git /app/LTX-2
-WORKDIR /app/LTX-2
-RUN uv sync --frozen
-# RunPod serverless SDK into the same venv
-RUN uv pip install runpod
-
-# Bake the small spatial upsampler (~1 GB, public, no token)
+# ---- Baked models FIRST, independent of the app venv (downloaded via ephemeral uvx)
+# so that later venv/handler changes do NOT invalidate these big cached layers. ----
 RUN mkdir -p /models \
  && wget -q -O /models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors \
       "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
 
-# Bake the Gemma text encoder directory (~24 GB, public, no token). RunPod's Model
-# caching field only takes ONE model (the checkpoint), so we bake Gemma here.
-# IMPORTANT: download each ~5GB shard in its OWN layer so they pull in parallel and
-# a failed shard retries alone (a single 24GB layer kept failing/restarting forever).
-RUN uv pip install "huggingface_hub[hf_transfer]"
-ENV HF_HUB_ENABLE_HF_TRANSFER=1
-RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it --include "*.json" "*.model" "*.jinja" --local-dir /models/gemma
-RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it --include "model-00001-of-00005.safetensors" --local-dir /models/gemma
-RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it --include "model-00002-of-00005.safetensors" --local-dir /models/gemma
-RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it --include "model-00003-of-00005.safetensors" --local-dir /models/gemma
-RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it --include "model-00004-of-00005.safetensors" --local-dir /models/gemma
-RUN /app/LTX-2/.venv/bin/huggingface-cli download unsloth/gemma-3-12b-it --include "model-00005-of-00005.safetensors" --local-dir /models/gemma
-RUN ls -lh /models/gemma
+# Gemma text encoder (~24GB) — each ~5GB shard in its own layer (parallel pull + resumable)
+RUN uvx --from "huggingface_hub[hf_transfer]" huggingface-cli download unsloth/gemma-3-12b-it --include "*.json" "*.model" "*.jinja" --local-dir /models/gemma
+RUN uvx --from "huggingface_hub[hf_transfer]" huggingface-cli download unsloth/gemma-3-12b-it --include "model-00001-of-00005.safetensors" --local-dir /models/gemma
+RUN uvx --from "huggingface_hub[hf_transfer]" huggingface-cli download unsloth/gemma-3-12b-it --include "model-00002-of-00005.safetensors" --local-dir /models/gemma
+RUN uvx --from "huggingface_hub[hf_transfer]" huggingface-cli download unsloth/gemma-3-12b-it --include "model-00003-of-00005.safetensors" --local-dir /models/gemma
+RUN uvx --from "huggingface_hub[hf_transfer]" huggingface-cli download unsloth/gemma-3-12b-it --include "model-00004-of-00005.safetensors" --local-dir /models/gemma
+RUN uvx --from "huggingface_hub[hf_transfer]" huggingface-cli download unsloth/gemma-3-12b-it --include "model-00005-of-00005.safetensors" --local-dir /models/gemma
+
+# ---- Official LTX-2 package, pinned to Python 3.12 (3.14's forkserver breaks loading) ----
+ENV UV_PYTHON=3.12
+RUN git clone --depth 1 https://github.com/Lightricks/LTX-2.git /app/LTX-2
+WORKDIR /app/LTX-2
+RUN uv python install 3.12 \
+ && uv venv --python 3.12 \
+ && uv sync --frozen \
+ && uv pip install runpod \
+ && /app/LTX-2/.venv/bin/python --version
 
 COPY handler.py /app/handler.py
 
-# Model selection (overridable as endpoint env vars without rebuilding)
-ENV CKPT_REPO=Lightricks/LTX-2.3-fp8 \
-    CKPT_FILE=ltx-2.3-22b-distilled-fp8.safetensors \
+ENV CKPT_FILE=ltx-2.3-22b-distilled-fp8.safetensors \
     GEMMA_DIR=/models/gemma \
     UPSAMPLER_PATH=/models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors \
     QUANT=fp8-scaled-mm \

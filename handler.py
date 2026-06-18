@@ -127,4 +127,5 @@ def handler(job):
         return {"error": str(e), "trace": traceback.format_exc()}
 
 
-runpod.serverless.start({"handler": handler})
+if __name__ == "__main__":
+    runpod.serverless.start({"handler": handler})
